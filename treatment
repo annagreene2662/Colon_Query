@@ -1,0 +1,669 @@
+library(tidyverse)
+library(dplyr)
+library(forestplot)
+
+load("R:/Lab/AG_data/Colon/datasets/REDCap_merged_data.RData")
+hci.f <- read.csv("R:/Lab/AG_data/Colon/datasets/Moffitt_Colon_tracking_dataset.csv")
+colnames(hci.f)[colnames(hci.f)== "participant_id"]<- "study_id"
+d<- merge(d, hci.f[c("study_id", setdiff(names(hci.f), names(d)))], by= "study_id", all.x=TRUE)
+
+# Load 
+ruca <- read.csv("R:/Lab/AG_data/Colon/datasets/Moffitt_Colon_ruca.csv")
+d<- merge(d, ruca, by= "study_id", all.x=TRUE)
+
+# Adding distances 
+load("R:/Lab/AG_data/Colon/datasets/colon_distances.RData")
+
+tt<- d %>% filter(stage.short%in% c("I", "II", "III") & a_surgery== 1 & 
+                    (((!is.na(a_adj_tx_start_date) & a_adj_tx_start_date> f_surgery_date)|(!is.na(a_neoadj_tx_start_date) & a_neoadj_tx_start_date < f_surgery_date))|
+                       ((is.na(a_adj_tx_start_date) & !is.na(f_surgery_date)) |(is.na(a_neoadj_tx_start_date) & !is.na(f_surgery_date))) | 
+                      ((a_adj_tx_start_date %in% c(99, 0) & !is.na(f_surgery_date)) | (a_neoadj_tx_start_date %in% c(99, 0) & !is.na(f_surgery_date)))) &
+                    sgm03_1_02_01_primtumlocation_1 %in% c("ascend_colon", "cecum", "colon_nos", "colon_overlap", "desc_colon","hepatic_flex", "trans_colon_left", "trans_colon_right", "sigmoid_colon", "splenic_flex", "rectosigmoid_junc")) %>% 
+           dplyr::select(mrn, a_surgery, f_surgery_date, sxm03_1_01_00_sx_yn, sxm03_1_03_00_sx_dt, sgm03_1_01_01_diagnosis_dt, imm03_1_02_01_imgcolonscpy_dt, education, stage.clin, stage.path,
+                  dm0bl_1_05_00_race, dm0bl_1_06_00_ethnicity, dm0bl_1_02_00_gender, stage.short, age.at.dx, sgm03_1_02_01_primtumlocation_1, 
+                  sgm03_1_05_00_pathstgtnmaccn:sgm03_1_05_07_pathstgtnmm, a_neoadj_tx, a_neoadj_tx_start_date, a_adj_tx, a_adj_tx_start_date)  
+
+# Add data from MCAP 
+load("R:/Lab/AG_data/Colon/Script/Time_Treatment_MCAP.RData")
+
+pt<- list_of_datasets$`Patients Demographics`
+cr<- list_of_datasets$`Cancer Registry Diagnosis`
+tx<- list_of_datasets$`Cancer Registry Treatments`
+
+# Subset the cases to pathological stage and colon cancer only
+tt.mcp<- cr %>% filter((STAGE_PATHOLOGICAL_TNM_GROUP_DESC %in% c("1", "2A", "2B", "2C", "3","3A", "3B", "3C")|
+                        (STAGE_AJCC_8_GROUP_DESC %in% c("1", "2A", "2B", "2C", "3A", "3B", "3C") & substr(STAGE_AJCC_8_T_DESC, 1, 1)== "P"))& 
+PRIMARY_SITE_DESC %in%  c('COLON ASCENDING', 'COLON CECUM', 'COLON DESCENDING', 'COLON HEPATIC FLEXURE', 'COLON NOS', 
+'COLON OVERLAPPING', 'COLON SIGMOID', 'COLON SPLENIC FLEXURE', 'COLON TRANSVERSE','RECTOSIGMOID JUNCTION')) %>% 
+  left_join(pt, by= "PATIENT_ID")
+
+# Checking diagnosis 
+tt.mcp$dx_no<- ave(tt.mcp$MRN, tt.mcp$MRN, FUN= seq_along)
+
+# Checking the overlap in the diagnosis dates 
+tt.mcp<- tt.mcp %>% mutate(dx_id_mrn= paste(MRN, DX_DT, sep= "_"))
+d <- d %>% mutate(dx_id_mrn= paste(mrn, sgm03_1_01_01_diagnosis_dt, sep= "_"))
+length(intersect(tt.mcp$dx_id_mrn, d$dx_id_mrn)) # Not good 237 out of 293
+
+dx.w<-tt.mcp %>% filter(MRN %in% tt.mcp[which(tt.mcp$dx_no>1),]$MRN) %>% dplyr::select(MRN, DX_DT, PRIMARY_SITE_DESC)
+# dx.w$dx.no<- ave(dx.w$MRN, dx.w$MRN, FUN = seq_along)
+
+dx.w<-reshape(tt.mcp %>% dplyr::select(MRN, DX_DT, PRIMARY_SITE_DESC, dx_no), idvar= "MRN", timevar = "dx_no", direction= "wide") %>% dplyr::rename(mrn= "MRN") %>% mutate(mrn= as.integer(mrn))
+  dx.w<- dx.w %>% left_join(d[c("mrn", "sgm03_1_01_01_diagnosis_dt")], by= "mrn")
+# Keeping one diagnosis per patient (Matching REDcap database) 
+  #vdx.w<-reshape(dx.w, idvar= "MRN", timevar = "dx.no", direction= "wide") %>% dplyr::rename(mrn= "MRN") %>% mutate(mrn= as.integer(mrn))
+ 
+  dx.w<- dx.w %>% mutate(different_dx= ifelse(DX_DT.1 == sgm03_1_01_01_diagnosis_dt, 1, 0)) %>% 
+                  mutate(dt.diff= as.numeric(as.Date(sgm03_1_01_01_diagnosis_dt)-DX_DT.1)) %>% 
+                    mutate(Diagnosis_date= as.Date(ifelse(!is.na(DX_DT.1) & !is.na(sgm03_1_01_01_diagnosis_dt) & DX_DT.1 == sgm03_1_01_01_diagnosis_dt|
+                                                  !is.na(DX_DT.1) & !is.na(DX_DT.2) & !is.na(sgm03_1_01_01_diagnosis_dt) & DX_DT.1 != sgm03_1_01_01_diagnosis_dt & DX_DT.2== sgm03_1_01_01_diagnosis_dt|
+                                                  !is.na(DX_DT.1) &  is.na(DX_DT.2) & !is.na(sgm03_1_01_01_diagnosis_dt) & DX_DT.1 != sgm03_1_01_01_diagnosis_dt|
+                                                  !is.na(DX_DT.1) & !is.na(DX_DT.2) & !is.na(sgm03_1_01_01_diagnosis_dt) & DX_DT.1 != sgm03_1_01_01_diagnosis_dt & DX_DT.2 != sgm03_1_01_01_diagnosis_dt, sgm03_1_01_01_diagnosis_dt, 
+                                             ifelse(is.na(sgm03_1_01_01_diagnosis_dt) & !is.na(DX_DT.1), DX_DT.1, NA))))
+  dx.w <- dx.w %>% mutate(Site= ifelse(!is.na(DX_DT.2) & Diagnosis_date==DX_DT.2, PRIMARY_SITE_DESC.2, PRIMARY_SITE_DESC.1))
+  
+  dc<- dx.w %>% dplyr::select(mrn, Diagnosis_date, Site) %>%  full_join(tt %>% dplyr::select(mrn, sgm03_1_01_01_diagnosis_dt, sgm03_1_02_01_primtumlocation_1), by= "mrn") %>% 
+                mutate(primtumor= ifelse(sgm03_1_02_01_primtumlocation_1== "ascend_colon", "COLON ASCENDING", 
+                                                               ifelse(sgm03_1_02_01_primtumlocation_1== "cecum", "COLON CECUM", 
+                                                                      ifelse(sgm03_1_02_01_primtumlocation_1== "colon_overlap",  "COLON OVERLAPPING",
+                                                                             ifelse(sgm03_1_02_01_primtumlocation_1== "desc_colon", "COLON DESCENDING",
+                                                                                    ifelse(sgm03_1_02_01_primtumlocation_1== "hepatic_flex", "COLON HEPATIC FLEXURE",
+                                                                                           ifelse(sgm03_1_02_01_primtumlocation_1== "sigmoid_colon", "COLON SIGMOID",
+                                                                                                  ifelse(sgm03_1_02_01_primtumlocation_1== "splenic_flex", "SPLENIC FLEXURE",
+                                                                                                         ifelse(sgm03_1_02_01_primtumlocation_1== "rectosigmoid_junc", "RECTOSIGMOID JUNCTION",
+                                                                                                                ifelse(sgm03_1_02_01_primtumlocation_1 %in% c("trans_colon_left", "trans_colon_right"), "COLON TRANSVERSE", "COLON NOS")))))))))) %>%  
+  mutate(similarity= ifelse(primtumor== Site, 1, 0))
+
+# Cleaning surgeries
+sx<- tx %>% filter(PATIENT_ID %in% tt.mcp$PATIENT_ID & 
+                     TREATMENT_TYPE == "SURG" & 
+                     !is.na(TREATMENT_START_DT) &
+                     ((SURGERY_RADIATION_SEQ %in% c("RAD AFT SURG", "NOT APPL")|is.na(SURGERY_RADIATION_SEQ))|
+                     (SURGERY_SYSTEMATIC_RX_SEQ %in% c("NO SYSTEMIC RX OR NO SURG", "SYSTEMIC AFTER SURGERY")| is.na(SURGERY_SYSTEMATIC_RX_SEQ))) & 
+                     (!is.na(SURGERY_OF_PRIMARY_SITE_COLON_DESC) & !(SURGERY_OF_PRIMARY_SITE_COLON_DESC %in% c("EXCISIONAL BX", "NONE; AUTOPSY ONLY"))| !is.na(SURGERY_OF_PRIMARY_SITE_RECTOSIGMOID_DESC) & !(SURGERY_OF_PRIMARY_SITE_RECTOSIGMOID_DESC %in% c("EXCISIONAL BX", "NONE; AUTOPSY ONLY")))
+                     ) %>% 
+  dplyr::select(PATIENT_ID, TREATMENT_TYPE, TREATMENT_START_DT, SURGERY_OF_PRIMARY_SITE_COLON_DESC, SURGERY_OF_PRIMARY_SITE_RECTOSIGMOID_DESC,
+         SURGERY_RADIATION_SEQ, SURGERY_SYSTEMATIC_RX_SEQ, SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE) %>% 
+  left_join(pt[c("MRN", "PATIENT_ID")], by= "PATIENT_ID")
+
+sx$sx_no<- ave(sx$MRN, sx$MRN, FUN = seq_along)
+sx.w<- reshape(sx, idvar = c("MRN", "PATIENT_ID"), timevar = "sx_no", direction="wide")
+
+# Keeping the first occurring surgery 
+sx.w<- sx.w %>% mutate(TREATMENT_START_DT= apply(sx.w[c("TREATMENT_START_DT.1","TREATMENT_START_DT.2","TREATMENT_START_DT.3")], 1, function(x) min(x, na.rm= TRUE))) 
+sx.w<- sx.w %>%  
+       mutate(SURGERY_SYSTEMATIC_RX_SEQ= ifelse(TREATMENT_START_DT== TREATMENT_START_DT.1, SURGERY_SYSTEMATIC_RX_SEQ.1, 
+                                                ifelse(TREATMENT_START_DT== TREATMENT_START_DT.2, SURGERY_SYSTEMATIC_RX_SEQ.2,
+                                                       ifelse(TREATMENT_START_DT== TREATMENT_START_DT.3, SURGERY_SYSTEMATIC_RX_SEQ.3, NA)))) %>%  
+      mutate(SURGERY_RADIATION_SEQ= ifelse(TREATMENT_START_DT== TREATMENT_START_DT.1, SURGERY_RADIATION_SEQ.1, 
+                                         ifelse(TREATMENT_START_DT== TREATMENT_START_DT.2, SURGERY_RADIATION_SEQ.2,
+                                                ifelse(TREATMENT_START_DT== TREATMENT_START_DT.3, SURGERY_RADIATION_SEQ.3, NA)))) %>% 
+      mutate(SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE= ifelse(TREATMENT_START_DT== TREATMENT_START_DT.1, SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE.1, 
+                                           ifelse(TREATMENT_START_DT== TREATMENT_START_DT.2, SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE.2,
+                                                  ifelse(TREATMENT_START_DT== TREATMENT_START_DT.3, SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE.3, NA)))) %>% 
+      mutate(SURGERY_OF_PRIMARY_SITE_RECTOSIGMOID_DESC= ifelse(TREATMENT_START_DT== TREATMENT_START_DT.1, SURGERY_OF_PRIMARY_SITE_RECTOSIGMOID_DESC.1, 
+                                                          ifelse(TREATMENT_START_DT== TREATMENT_START_DT.2, SURGERY_OF_PRIMARY_SITE_RECTOSIGMOID_DESC.2,
+                                                                  ifelse(TREATMENT_START_DT== TREATMENT_START_DT.3, SURGERY_OF_PRIMARY_SITE_RECTOSIGMOID_DESC.3, NA)))) %>% 
+      mutate(SURGERY_OF_PRIMARY_SITE_COLON_DESC= ifelse(TREATMENT_START_DT== TREATMENT_START_DT.1, SURGERY_OF_PRIMARY_SITE_COLON_DESC.1, 
+                                                          ifelse(TREATMENT_START_DT== TREATMENT_START_DT.2, SURGERY_OF_PRIMARY_SITE_COLON_DESC.2,
+                                                                 ifelse(TREATMENT_START_DT== TREATMENT_START_DT.3, SURGERY_OF_PRIMARY_SITE_COLON_DESC.3, NA)))) %>% 
+  dplyr::select(MRN, TREATMENT_START_DT, SURGERY_OF_PRIMARY_SITE_COLON_DESC, SURGERY_OF_PRIMARY_SITE_RECTOSIGMOID_DESC,
+            SURGERY_RADIATION_SEQ, SURGERY_SYSTEMATIC_RX_SEQ, SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE)
+ 
+dc<- dc %>% full_join(sx.w  %>% mutate(mrn=as.integer(MRN)) %>% dplyr::select(mrn, TREATMENT_START_DT, SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE), by= "mrn") %>% full_join(tt %>% dplyr::select(mrn, f_surgery_date), by= "mrn")
+dc <- dc %>% mutate(TREATMENT_START_DT= as.Date(TREATMENT_START_DT)) %>% 
+             mutate(sx.similar= ifelse(TREATMENT_START_DT==f_surgery_date, 1, 0)) %>% 
+             mutate(Site.2= ifelse(is.na(Site) & !is.na(primtumor), primtumor, Site)) %>% 
+             mutate(Diagnosis_date.2= as.Date(ifelse(is.na(sgm03_1_01_01_diagnosis_dt) & !is.na(Diagnosis_date), paste(Diagnosis_date), paste(sgm03_1_01_01_diagnosis_dt)))) %>% 
+             mutate(Surgery_date.2= as.Date(ifelse(is.na(f_surgery_date) & !is.na(TREATMENT_START_DT), paste(TREATMENT_START_DT), paste(f_surgery_date)))) %>% 
+             filter(!is.na(Surgery_date.2) & !is.na(Diagnosis_date.2))  %>% dplyr::select(mrn, Site.2, Diagnosis_date.2, Surgery_date.2, SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE) %>% 
+             rename(Site= "Site.2", Diagnosis_date= "Diagnosis_date.2", Surgery_date= "Surgery_date.2")
+
+# Merging datasets
+dm <- dc %>% left_join(d %>% filter(mrn %in% dc$mrn) %>% 
+                         dplyr::select(mrn, imm03_1_02_01_imgcolonscpy_dt, education, 
+                                     dm0bl_1_05_00_race, dm0bl_1_06_00_ethnicity, dm0bl_1_02_00_gender, stage.short, age.at.dx,  
+                                     sgm03_1_05_00_pathstgtnmaccn:sgm03_1_05_07_pathstgtnmm, a_neoadj_tx, a_neoadj_tx_start_date, a_adj_tx, a_adj_tx_start_date, 
+                                     h_smoke_status, h_smoke_pack_years, k_bmi_bl, `Co_Diabetes w/End Stage Organ Disease`, `Co_COPD`, `address.primary.ruca`, 
+                                     dm0bl_2_01_00_vitalstatus, dm0bl_2_02_00_death_dt, dm0bl_2_07_00_lastalive_dt, ab0bl_1_01_02_eg_pw_dt, o_lastalivedate, sxm03_1_13_00_sxpathresp), by= "mrn") %>% 
+  
+   rename(Race= "dm0bl_1_05_00_race", Ethnicity= "dm0bl_1_06_00_ethnicity", Gender= "dm0bl_1_02_00_gender", Stage="stage.short", Age= "age.at.dx",  
+         Treatment.1= "a_neoadj_tx_start_date", Treatment.2= "a_adj_tx_start_date", Smoke_status= "h_smoke_status", smoke_pack_years= "h_smoke_pack_years", BMI="k_bmi_bl") %>% 
+  mutate(Race= ifelse(Race== 1, "White", 
+                      ifelse(Race== 2, "African American", 
+                             ifelse(Race== 3, "Asian", 
+                                    ifelse(Race== 7, "Native Hawaiian or Pacific Islander", "Other")))), 
+         Ethnicity= ifelse(Ethnicity==0, "Non-Hispanic", 
+                           ifelse(Ethnicity== 1, "Hispanic", NA)), 
+         Race_ethnic= ifelse((Ethnicity=="Non-Hispanic"| is.na(Ethnicity)) & Race== "White", "NHW", 
+                                    ifelse((Ethnicity== "Hispanic"| Ethnicity=="Non-Hispanic" |is.na(Ethnicity)) & Race %in% c("African American", "Asian", "Native Hawaiian or Pacific Islander", "Other")|
+                                             Ethnicity== "Hispanic" & Race=="White", "Hispanic and other", NA)),
+         # Age= ifelse(Age<= 49, "< 49", 
+         #             ifelse(Age>=50 & Age <= 59, "50-59", 
+         #                    ifelse(Age>= 60 & Age <= 69, "60-69", ">70"))), 
+         Site.long= Site, 
+         Site= ifelse(Site.long %in% c("COLON ASCENDING","COLON CECUM", "COLON DESCENDING", "COLON HEPATIC FLEXURE", "COLON NOS", 
+                                    "COLON OVERLAPPING", "COLON SPLENIC FLEXURE", "SPLENIC FLEXURE", "COLON TRANSVERSE"), "Colon", 
+                      ifelse(Site.long %in% c("COLON SIGMOID", "RECTOSIGMOID JUNCTION"), "Sigmoid/rectosigmoid", NA)),
+         Location= ifelse(Site.long %in% c("COLON ASCENDING", "COLON CECUM", "COLON TRANSVERSE", "COLON HEPATIC FLEXURE", "COLON NOS"), "Right Colon", 
+                                 ifelse(Site.long %in% c("COLON SPLENIC FLEXURE", "SPLENIC FLEXURE", "COLON SIGMOID", "COLON DESCENDING", "COLON OVERLAPPING", "RECTOSIGMOID JUNCTION", "COLON SIGMOID"), "Left Colon", NA)),
+         interval= as.numeric(round(Surgery_date - as.Date(Diagnosis_date), 0)), 
+         
+         Education= ifelse(!is.na(education) & education %in% c(1, 2, 3, 4, 5), "High school or less", 
+                                             ifelse(!is.na(education) & education %in% c(6, 7, 8), "College or Postgraduate", "Unknown")), 
+         
+         Smoke_status= ifelse(Smoke_status==1, "Never", 
+                              ifelse(Smoke_status==2, "Former user",
+                                     ifelse(Smoke_status== 3, "Not current user", 
+                                            ifelse(Smoke_status== 4, "Current user","Unknown")))), 
+         BMI.cat= ifelse(BMI <= 18.5, "Underweight", 
+                         ifelse(BMI > 0 & BMI > 18.5 & BMI<= 24.9, "Normal", 
+                                ifelse(BMI>= 25 & BMI <= 29.9, "Overweight", 
+                                       ifelse(BMI>= 30, "Obese", NA)))), 
+         rural_urban= as.factor(ifelse(!is.na(address.primary.ruca.2010) & address.primary.ruca.2010 %in% c(1, 2, 3, 4, 5, 6), "Urban", 
+                                       ifelse(!is.na(address.primary.ruca.2010) & address.primary.ruca.2010 %in% c(7, 8, 9, 10), "Rural", NA))))
+
+dm<- dm %>% mutate(interval= ifelse(interval< 0, NA,  interval)) %>% 
+            mutate(Diagnosis_date= as.Date(ifelse(interval== 0 & !is.na(imm03_1_02_01_imgcolonscpy_dt), paste(imm03_1_02_01_imgcolonscpy_dt), paste(Diagnosis_date)))) %>% 
+            mutate(interval= as.numeric(round(Surgery_date - as.Date(Diagnosis_date), 0))) %>% mutate(interval= ifelse(interval< 0, NA,  interval))
+
+dm<- dm %>% dplyr::mutate(Smoke_status= ifelse(Smoke_status== "Never",  "Never",
+                                                 ifelse(Smoke_status %in% c("Former user","Not current user", "Current user"), "Current or former", "Unknown")))
+
+cr.clin<- cr %>% dplyr::select(PATIENT_ID, LAST_CONTACT_OR_DEATH_DT, VITAL_STATUS_DESC, COMORBIDITY_01_DESC, COMORBIDITY_02_DESC, COMORBIDITY_03_DESC, 
+                                     COMORBIDITY_04_DESC, COMORBIDITY_05_DESC, COMORBIDITY_06_DESC, COMORBIDITY_07_DESC, COMORBIDITY_08_DESC, COMORBIDITY_09_DESC, COMORBIDITY_10_DESC,
+                                     RECURRENCE_SITE1_DESC, RECURRENCE_SITE2_DESC, RECURRENCE_SITE3_DESC, RECURRENCE_DT, METASTATIC_SITE_AT_DIAGNOSIS_DESC, OCCUPATION_TXT,
+                                     INDUSTRY_TXT, PAYER_SOURCE_AT_DX_DESC, TOBACCO_USE_CIGARETTES_DESC) %>%  unique()
+
+cr.clin$dups<- ave(cr.clin$PATIENT_ID, cr.clin$PATIENT_ID, FUN= seq_along)
+# View(cr.clin[which(cr.clin$PATIENT_ID %in% cr.clin[which(cr.clin$dups>1),]$PATIENT_ID),])
+
+cr.clin.w<- reshape(cr.clin, idvar = "PATIENT_ID", timevar = "dups", direction= "wide") %>% left_join(pt %>% dplyr::select(MRN, PATIENT_ID), by= "PATIENT_ID") %>% 
+  dplyr::rename(mrn= "MRN") %>%  mutate(mrn= as.integer(mrn))
+
+dm<- dm %>% left_join(cr.clin.w, by= "mrn")
+comorb<- names(dplyr::select(dm, matches("comorbi")))
+dm[comorb]<- lapply(dm[comorb], tolower)
+
+dm$COP<- !!rowSums(sapply(dm[comorb], grepl, pattern = "chronic obstructive pulmonary|pulmonary|copd|plmnry"))
+dm$diabetes<- !!rowSums(sapply(dm[comorb], grepl, pattern = "diabetes|dbts"))
+dm$CAD<- !!rowSums(sapply(dm[comorb], grepl, pattern = "coronary|cnry"))
+
+dm$COP<- ifelse(dm$COP== TRUE |dm$`Co_COPD`== 1, TRUE, FALSE)
+dm$diabetes<- ifelse(dm$diabetes== TRUE |dm$`Co_Diabetes w/End Stage Organ Disease`== 1, TRUE, FALSE)
+dm$comorbidities<- ifelse(!is.na(dm$COP) & dm$COP== TRUE |!is.na(dm$diabetes) & dm$diabetes== TRUE|!is.na(dm$CAD) & dm$CAD== TRUE, "Yes", "No")
+
+
+library(ggplot2)
+ggplot(data=dm, aes(interval)) + 
+  geom_histogram()
+
+ggplot(data=dmf, aes(interval)) + 
+  geom_histogram()
+
+summary(dmf$interval)
+
+
+library(gtsummary)
+# We might extrapolate from prior  related studies that early (<2 weeks), intermediate (>2 but <12 weeks), 
+# and long (>12 weeks)
+dm<- dm %>% dplyr::mutate(inter_qs= ifelse(interval <= quantile(interval, .33, na.rm = TRUE), "early", 
+                                    ifelse(interval > quantile(interval, .33, na.rm = TRUE) & interval <= quantile(interval, .66, na.rm = TRUE), "intermediate", 
+                                           ifelse(interval > quantile(interval, .66, na.rm = TRUE), "long", NA )))) %>% 
+  dplyr::mutate(inter_wks= ifelse(interval <= 14, "early", 
+                                       ifelse(interval > 14 & interval <= 84, "intermediate", 
+                                              ifelse(interval > 84, "long", NA ))))
+
+table(dm$inter_qs)
+table(dm$inter_wks)
+table(dm$inter_wks, dm$inter_qs)
+
+dm[c(names(dplyr::select(dm, matches("dt"))),names(dplyr::select(dm, matches("date"))))]<- lapply(dm[c(names(dplyr::select(dm, matches("dt"))),names(dplyr::select(dm, matches("date"))))], function(x) as.Date(x))
+              
+
+# Stepwise regression model variables
+library(nnet)
+library(MASS)
+
+dm$inter_wks<- relevel(as.factor(dm$inter_wks), ref = "intermediate")
+dm$Race_ethnic<- relevel(as.factor(dm$Race_ethnic), ref = "NHW")
+dm$Site<- relevel(as.factor(dm$Site), ref = "Sigmoid/rectosigmoid")
+dm$Location<- relevel(as.factor(dm$Location), ref = "Right Colon")
+
+dm$Smoke_status<- relevel(as.factor(dm$Smoke_status), ref = "Never")
+dm$Education<- relevel(as.factor(dm$Education), ref = "College or Postgraduate")
+
+dm$inter_wks_int<- as.factor(ifelse(dm$inter_wks=="intermediate", 1, ifelse(dm$inter_wks=="early", 0, NA)))
+dm$inter_wks_long<- as.factor(ifelse(dm$inter_wks=="long", 1, ifelse(dm$inter_wks=="early", 0, NA)))
+
+dm$vital_status<- ifelse(dm$dm0bl_2_01_00_vitalstatus== 1|dm$VITAL_STATUS_DESC.1== "DEAD"|dm$VITAL_STATUS_DESC.2== "DEAD"|dm$VITAL_STATUS_DESC.3== "DEAD",  1, NA)
+dm$vital_status<- ifelse(is.na(dm$vital_status) & (dm$dm0bl_2_01_00_vitalstatus== 0 |dm$VITAL_STATUS_DESC.1== "ALIVE"|dm$VITAL_STATUS_DESC.2== "ALIVE"|dm$VITAL_STATUS_DESC.3== "ALIVE"),  0, dm$vital_status)
+
+dm$vital_status_date<- ifelse(dm$dm0bl_2_01_00_vitalstatus== 1 & dm$vital_status== 1 & !is.na(dm$dm0bl_2_02_00_death_dt), paste(dm$dm0bl_2_02_00_death_dt), 
+                              ifelse(dm$dm0bl_2_01_00_vitalstatus== 1 & dm$vital_status== 1 & is.na(dm$dm0bl_2_02_00_death_dt) & !is.na(dm$LAST_CONTACT_OR_DEATH_DT.1)|
+                                       dm$vital_status== 1 & dm$dm0bl_2_01_00_vitalstatus== 0 & dm$VITAL_STATUS_DESC.1== "DEAD" & !is.na(dm$LAST_CONTACT_OR_DEATH_DT.1), paste(dm$LAST_CONTACT_OR_DEATH_DT.1), 
+                                     ifelse(dm$vital_status== 0 & dm$dm0bl_2_01_00_vitalstatus== 0 & !is.na(dm$dm0bl_2_07_00_lastalive_dt), paste(dm$dm0bl_2_07_00_lastalive_dt), 
+                                            ifelse(dm$vital_status== 0 & dm$dm0bl_2_01_00_vitalstatus== 0 & is.na(dm$dm0bl_2_07_00_lastalive_dt) & !is.na(dm$LAST_CONTACT_OR_DEATH_DT.1), paste(dm$LAST_CONTACT_OR_DEATH_DT.1),
+                                                   ifelse(dm$vital_status== 0 & dm$dm0bl_2_01_00_vitalstatus== 0 & is.na(dm$dm0bl_2_07_00_lastalive_dt) & is.na(dm$LAST_CONTACT_OR_DEATH_DT.1) & !is.na(dm$o_lastalivedate), paste(dm$o_lastalivedate), 
+                                                          ifelse(dm$vital_status== 0 & dm$dm0bl_2_01_00_vitalstatus== 0 & is.na(dm$dm0bl_2_07_00_lastalive_dt) & is.na(dm$LAST_CONTACT_OR_DEATH_DT.1) & is.na(dm$o_lastalivedate) & !is.na(dm$ab0bl_1_01_02_eg_pw_dt), paste(dm$ab0bl_1_01_02_eg_pw_dt),NA))))))
+
+
+dm$Insurance<- as.factor(ifelse(dm$PAYER_SOURCE_AT_DX_DESC.1 %in% c("MEDICAID", "MEDICARE", "MEDICARE-MANAGED CARE", "MEDICARE-PRIVATE SUPPL", "MEDICAID THRU MANAGD CARE", "MEDICARE W MEDICAID SUPP", "MEDICARE WITH SUPPL", "VETERANS AFFAIRS", "TRICARE"), "Gov", 
+                      ifelse(dm$PAYER_SOURCE_AT_DX_DESC.1 %in% c("MANAGED CARE (HMO, PPO)"), "HMO", 
+                             ifelse(dm$PAYER_SOURCE_AT_DX_DESC.1 %in% c("NOT INSURED", "SELF PAY (NOT INSURED)", "UNKNOWN INSURANCE STATUS")| is.na(dm$PAYER_SOURCE_AT_DX_DESC.1), "No Insurance", NA))))
+dm$Insurance<- relevel(as.factor(dm$Insurance), ref = "HMO")
+
+# 1= Negative margins 
+# 2= positive margings 
+# 0= not assessed
+
+dm$Margins_mcap<- ifelse(!is.na(dm$SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE) & dm$SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE %in% c("MACROSCOPIC", "MICROSCOPIC", "RESIDUAL TUMOR NOS"), 2, 
+                         ifelse(!is.na(dm$SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE) &dm$SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE %in% c("NO RESIDUAL TUMOR"), 1, 
+                                ifelse(!is.na(dm$SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE) & dm$SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE %in% c("UNKNOWN, NOT APPLICABLE", "NOT EVALUABLE")|is.na(dm$SURGERY_SURGICAL_MARGINS_OF_PRIMARY_SITE), 0, NA))) 
+                      
+dm$Margins_colocare<- ifelse(!is.na(dm$sxm03_1_13_00_sxpathresp) & dm$sxm03_1_13_00_sxpathresp %in% c(1, 2, 3) , 2,
+                             ifelse(!is.na(dm$sxm03_1_13_00_sxpathresp) & dm$sxm03_1_13_00_sxpathresp %in% c(4) , 1, 0))
+
+
+dm$Margins<- apply(dm[c("Margins_colocare", "Margins_mcap")], 1, function(x) max(x))
+
+dm$Margins<- relevel(as.factor(ifelse(dm$Margins== 1, "Negative", 
+                    ifelse(dm$Margins==2, "Positive", "Not assessed"))), ref = "Negative")
+
+# Completing dates missing (fixed in redcap)
+vs.dts<- dm[which(is.na(dm$vital_status_date)),]$mrn
+d[which(d$mrn %in% vs.dts), c("mrn", "study_id", "ab0bl_1_01_02_eg_pw_dt", "o_lastalivedate", "a_mr_lastcompletereview")]
+
+dm$vital_status_date<- as.Date(ifelse(dm$mrn== 0000, "2020-12-01",
+                                  ifelse(dm$mrn== 0001, "2021-02-01",
+                                      ifelse(dm$mrn== 0005, "2015-08-05", paste(dm$vital_status_date)))))
+
+dmf<- dm %>%  filter(!is.na(interval) & interval > 0)
+
+dmf<- dmf %>% left_join(u_dist.new, by= "mrn")
+
+dmf<- dmf %>% mutate(Distance= as.factor(ifelse(km >= 100, 1, 0)))
+
+#save(dmf, file= "R:/Lab/AG_data/Colon/datasets/Dataset_for_analysis.RData")
+load("R:/Lab/AG_data/Colon/datasets/Dataset_for_analysis.Rdata")
+# Table one for independence
+
+library(gtsummary)
+dmf %>% dplyr::select(inter_wks,inter_qs, Margins, interval, Race, Race_ethnic, Gender, Ethnicity, Education, Age, Stage, Site, 
+              Location, Smoke_status, BMI, BMI.cat, COP, diabetes, CAD, comorbidities, vital_status, Insurance, km, Distance) %>% 
+  tbl_summary(by=inter_qs) %>% add_p %>% add_overall()
+
+
+multinom.p <- function(model){
+  z <- summary(model)$coefficients/summary(model)$standard.errors
+  p <- (1 - pnorm(abs(z), 0, 1)) * 2
+  list(p)
+}
+
+### Model
+dmf$inter_qs<- relevel(as.factor(dmf$inter_qs), ref = "intermediate")
+
+tmp.list.cont <- list()
+tmp.list.conf <- list()
+tmp.list.p <- list()
+full.model<- list()
+
+for (i in c("Margins", "Race_ethnic", "Gender", "Education", "Age", "Stage", "Site", "Smoke_status", "BMI", "comorbidities", "Insurance", "Location", "km", "Distance")){
+  
+  m1<-multinom(inter_qs ~ get(i),
+               data=dmf, family="binomial", model = TRUE)
+  
+  coef<- as.data.frame(t(as.data.frame(exp(coef(m1)))))
+  # coef.inter<- exp(coef(m1))[1,]
+  # coef.long<- exp(coef(m1))[2,]
+  # coef<- rbind(as.data.frame(coef.inter), as.data.frame(coef.long))
+  tmp.list.cont[[i]] <- coef
+  
+  
+  conf<- as.data.frame(exp(confint(m1)))
+  tmp.list.conf[[i]] <- conf
+  
+  p<- as.data.frame(t(as.data.frame(multinom.p(m1))))
+  tmp.list.p[[i]] <- p
+  
+  full.model[[i]]<- m1
+
+}
+  
+or<- do.call(rbind, lapply(tmp.list.cont, as.data.frame))
+ci<- do.call(rbind, lapply(tmp.list.conf, as.data.frame))
+pv<- do.call(rbind, lapply(tmp.list.p, as.data.frame)) %>% dplyr::rename(P.early= "early", P.long= "long")
+unv<- cbind(or, ci)
+unv<- cbind(unv, pv)
+unv<- unv %>% mutate(early= paste0(sprintf("%.2f", early), " (", sprintf("%.2f", `2.5 %.early`), ", ", sprintf("%.2f", `97.5 %.early`), ")" ),
+                     lon=   paste0(sprintf("%.2f", long), " (", sprintf("%.2f", `2.5 %.long`), ", ", sprintf("%.2f", `97.5 %.long`), ")" ), 
+                     early.p= sprintf("%.2f", P.early), 
+                     long.p= sprintf("%.2f", P.long)) 
+unv<- unv %>% dplyr::select(early, early.p, lon, long.p) %>% dplyr::rename(`Ealy OR (95% CI)`= early, 
+                                                                    `Ealy P-value`= early.p, 
+                                                                    `Long OR (95% CI)`= lon, 
+                                                                    `Long P-value`= long.p)
+unv$Variable<- gsub("get\\(i\\)", '', rownames(unv))
+unv<- unv[!grepl("Intercept", unv$Variable),]
+
+rownames(unv)<- NULL
+
+unv.interval<- unv %>%  dplyr::select(Variable,  "Ealy OR (95% CI)", "Ealy P-value",     "Long OR (95% CI)", "Long P-value")                     
+
+
+# save(unv.interval, file="R:/Lab/AG_data/Colon/model/Univariate_models.RData")
+
+
+### Univariate model with surgery outcomes
+tmp.list.cont <- list()
+tmp.list.conf <- list()
+tmp.list.p <- list()
+full.model<- list()
+
+for (i in c("inter_qs", "Race_ethnic", "Gender", "Education", "Age", "Stage", "Site", "Smoke_status", "BMI", "comorbidities", "Insurance", "Location", "km", "Distance")){
+  
+  m1<-multinom(Margins ~ get(i),
+               data=dmf, family="binomial")
+  
+  # coef<- as.data.frame(exp(coef(m1)))
+  # 
+  # tmp.list.cont[[i]] <- coef
+  # 
+  # 
+  # conf<- as.data.frame(exp(confint(m1)))
+  # tmp.list.conf[[i]] <- conf
+  # 
+  # p<- as.data.frame(coef(summary(m1))[, 4])
+  # tmp.list.p[[i]] <- p
+  # 
+  # full.model[[i]]<- m1
+  # 
+  
+  coef<- as.data.frame(t(as.data.frame(exp(coef(m1)))))
+  # coef.inter<- exp(coef(m1))[1,]
+  # coef.long<- exp(coef(m1))[2,]
+  # coef<- rbind(as.data.frame(coef.inter), as.data.frame(coef.long))
+  tmp.list.cont[[i]] <- coef
+  
+  
+  conf<- as.data.frame(exp(confint(m1)))
+  tmp.list.conf[[i]] <- conf
+  
+  p<- as.data.frame(t(as.data.frame(multinom.p(m1))))
+  tmp.list.p[[i]] <- p
+}
+
+# or<- do.call(rbind, lapply(tmp.list.cont, as.data.frame))%>% rename(OR= 1)
+# ci<- do.call(rbind, lapply(tmp.list.conf, as.data.frame))
+# pv<- do.call(rbind, lapply(tmp.list.p, as.data.frame)) %>% rename(P.value= 1)
+# unv<- cbind(or, ci)
+# unv<- cbind(unv, pv)
+# unv<- unv %>% mutate(`Positive margins`= paste0(sprintf("%.2f", OR), " (", sprintf("%.2f", `2.5 %`), ", ", sprintf("%.2f", `97.5 %`), ")" ),
+#                      P.value= sprintf("%.2f", P.value)) 
+# 
+# unv<- unv %>% dplyr::select(`Positive margins`, P.value) 
+# unv$Variable<- gsub("get\\(i\\)", '', rownames(unv))
+# unv<- unv[!grepl("Intercept", unv$Variable),]
+# 
+# rownames(unv)<- NULL
+# 
+# unv.margins<- unv %>%  dplyr::select(Variable,  `Positive margins`, P.value)  
+
+
+or<- do.call(rbind, lapply(tmp.list.cont, as.data.frame))
+ci<- do.call(rbind, lapply(tmp.list.conf, as.data.frame))
+pv<- do.call(rbind, lapply(tmp.list.p, as.data.frame)) %>% rename(P.Notassessed= "Not assessed", P.Positive= "Positive")
+unv<- cbind(or, ci)
+unv<- cbind(unv, pv)
+unv<- unv %>% mutate(Notassessed= paste0(sprintf("%.2f", `Not assessed`), " (", sprintf("%.2f", `2.5 %.Not assessed`), ", ", sprintf("%.2f", `97.5 %.Not assessed`), ")" ),
+                     Positive=   paste0(sprintf("%.2f", Positive), " (", sprintf("%.2f", `2.5 %.Positive`), ", ", sprintf("%.2f", `97.5 %.Positive`), ")" ), 
+                     Notassessed.p= sprintf("%.2f", P.Notassessed), 
+                     Positive.p= sprintf("%.2f", P.Positive)) 
+unv<- unv %>% dplyr::select(Notassessed, Notassessed.p, Positive, Positive.p) %>% rename(`Not assessed OR (95% CI)`= Notassessed, 
+                                                                    `Not assessed P-value`= Notassessed.p, 
+                                                                    `Positive OR (95% CI)`= Positive, 
+                                                                    `Positive P-value`= Positive.p)
+unv$Variable<- gsub("get\\(i\\)", '', rownames(unv))
+unv<- unv[!grepl("Intercept", unv$Variable),]
+
+rownames(unv)<- NULL
+
+unv.margins<- unv %>%  dplyr::select(Variable, `Positive OR (95% CI)`, `Positive P-value`, `Not assessed OR (95% CI)`, `Not assessed P-value`) 
+
+
+
+# Testing the multinomial  and logistic regression models   
+test<-multinom(inter_wks ~ Race_ethnic,
+             data=dmf, family="binomial", model = TRUE)
+
+m1 %>% tbl_regression()
+
+
+test2<-glm(inter_wks_int ~ Gender,
+           data=dmf, family="binomial")
+
+exp(coef(test2))
+
+test<-multinom(inter_wks ~ Race_ethnic,
+               data=dmf, family="binomial", model = TRUE)
+
+## Survival 
+library(survival)
+
+dmf<- dmf %>% mutate( 
+       os_mo = as.numeric(difftime(vital_status_date, Diagnosis_date, units = "days")) / 30, 
+       os_yrs = as.numeric(difftime(vital_status_date, Diagnosis_date, units = "days")) / 365.25) 
+      
+library(ggplot2)
+library(survminer)
+ggsurvplot(
+  fit = survfit(Surv(os_mo, vital_status) ~ inter_wks, data =dmf ), 
+  xlab = "Months", 
+  ylab = "Overall survival probability")
+
+ggsurvplot(
+  fit = survfit(Surv(os_yrs, vital_status) ~ inter_wks, data =dmf[which(dmf$os_yrs >= 0 & dmf$os_yrs <= 5),]), 
+  xlab = "Years", 
+  ylab = "Overall survival probability")
+
+ coxph(Surv(os_yrs, vital_status) ~ inter_wks, data = dmf[which(dmf$os_yrs >= 0 & dmf$os_yrs <= 5),]) %>% 
+   gtsummary::tbl_regression() 
+ 
+ 
+ 
+ save(dmf, file="R:/Lab/AG_data/Colon/datasets/Time_to_Treatment.RData")
+ save(dmf, file="R:/Lab/AG_data/Colon/datasets/Time_to_Treatment1.RData")
+ 
+ # Stepwise regressions 
+ #define intercept-only model
+ install.packages('fastDummies')
+ library('fastDummies')
+ 
+dmf <- dmf %>% dummy_cols(select_columns = 'inter_qs')
+glm(inter_qs_early ~ Margins, data=dmf, family= "binomial")
+tbl_regression(glm(inter_qs_early ~ Margins, data=dmf, family= "binomial"))
+tbl_regression(glm(inter_qs_long ~ Margins, data=dmf, family= "binomial"))
+ 
+
+tbl_regression(glm(inter_qs_early ~ Margins+ Age + Stage + Race_ethnic + Gender+ Insurance + Location + Distance, data=dmf, family= "binomial"))
+tbl_regression(glm(inter_qs_long ~ Margins+ Age + Stage + Race_ethnic + Gender + Insurance + Location + Distance, data=dmf, family= "binomial"))
+
+
+tbl_regression(glm(inter_qs_early ~ Margins + Age + Stage + Race_ethnic + Gender+ Insurance + Location, data=dmf, family= "binomial"))
+tbl_regression(glm(inter_qs_long ~ Margins + Age + Stage + Race_ethnic + Gender + Insurance + Location, data=dmf, family= "binomial"))
+
+
+tbl_regression(glm(inter_qs_early ~ Margins + Insurance + Distance, data=dmf, family= "binomial"))
+tbl_regression(glm(inter_qs_long ~ Margins + Insurance + Distance, data=dmf, family= "binomial"))
+
+
+tbl_regression(glm(inter_qs_early ~ Insurance + Age + Stage + Race_ethnic + Gender + Location + Distance, data=dmf, family= "binomial"))
+tbl_regression(glm(inter_qs_long ~ Insurance + Age + Stage + Race_ethnic + Gender + Location + Distance , data=dmf, family= "binomial"))
+
+dmf$long.vs.early<- as.factor(ifelse(dmf$inter_qs== "early", 1, ifelse(dmf$inter_qs== "long", 0, NA)))
+
+tbl_regression(glm(long.vs.early ~ Insurance , data=dmf, family= "binomial"))
+
+
+ 
+ all <- glm(inter_qs_early ~ Margins + Race_ethnic + Gender + Education + Age + Stage + Site + Smoke_status + BMI + comorbidities + Insurance + Location, data=dmf)
+ #perform forward stepwise regression
+ forward <- step(intercept_only, direction='forward', scope=formula(all), trace=0)
+ 
+ dmfc<- dmf %>% dplyr::select(inter_qs_early, inter_qs_long, Margins, Race_ethnic, Gender, Education, 
+                              Age, Stage, Site, Smoke_status, BMI, comorbidities, Insurance, Location, km, Distance) %>% na.omit()
+ 
+ 
+ steps<- step(glm(inter_qs_early ~ Margins + Race_ethnic + Gender + Education + Age + Stage + Site + Smoke_status + BMI + comorbidities + Insurance + Location + km+ Distance, data=dmfc),direction="both") 
+ 
+# Multivariate regression models 
+ # Insurance + Age + Location + Distance + BMI + comorbidities
+   m1<-multinom(inter_qs ~   Insurance + Age + Location + Stage,
+                data=dmf, family="binomial", model = TRUE)
+   
+   coef<- as.data.frame(t(as.data.frame(exp(coef(m1)))))
+  
+   
+   conf<- as.data.frame(exp(confint(m1)))
+   
+   p<- as.data.frame(t(as.data.frame(multinom.p(m1)))) %>% dplyr::rename(P.early= early, P.long=long)
+  
+
+ mult<- cbind(coef, conf)
+ mult<- cbind(mult, p) 
+ mult<- mult %>% mutate(early= paste0(sprintf("%.2f", early), " (", sprintf("%.2f", `2.5 %.early`), ", ", sprintf("%.2f", `97.5 %.early`), ")" ),
+                      lon=   paste0(sprintf("%.2f", long), " (", sprintf("%.2f", `2.5 %.long`), ", ", sprintf("%.2f", `97.5 %.long`), ")" ), 
+                      early.p= sprintf("%.2f", P.early), 
+                      long.p= sprintf("%.2f", P.long)) 
+ mult<- mult %>% dplyr::select(early, early.p, lon, long.p) %>% dplyr::rename(`Ealy OR (95% CI)`= early, 
+                                                                     `Ealy P-value`= early.p, 
+                                                                     `Long OR (95% CI)`= lon, 
+                                                                     `Long P-value`= long.p)
+ mult$Variable<- gsub("get\\(i\\)", '', rownames(mult))
+ mult<- mult[!grepl("Intercept", mult$Variable),]
+ 
+ rownames(mult)<- NULL
+ 
+ mult.interval<- mult %>%  dplyr::select(Variable,  "Ealy OR (95% CI)", "Ealy P-value",     "Long OR (95% CI)", "Long P-value")                     
+  
+ d.fp<- mult.interval %>% mutate(early_or= substr(`Ealy OR (95% CI)`, 1, 4), 
+                                 early_lclm= substr(`Ealy OR (95% CI)`, 7, 10),
+                                 early_uclm= substr(`Ealy OR (95% CI)`, 13, 16),
+                                 long_or= substr(`Long OR (95% CI)`, 1, 4), 
+                                 long_lclm= substr(`Long OR (95% CI)`, 7, 10),
+                                 long_uclm= substr(`Long OR (95% CI)`, 13, 16)) %>% 
+   dplyr::rename(early_p=`Ealy P-value`, long_p= `Long P-value`) %>% 
+   dplyr::select(Variable, early_or, early_lclm, early_uclm, early_p, long_or, long_lclm, long_uclm, long_p)
+ 
+ d.fp.early<- d.fp %>% dplyr::select(Variable, early_or, early_lclm, early_uclm, early_p) %>% filter(Variable %in% c("InsuranceGov", "InsuranceNo Insurance"))
+ names(d.fp.early)<- gsub("early_", "", names(d.fp.early))
+ d.fp.early<- d.fp.early %>% mutate(Covariate= "Early", 
+                                    N= c(table(dmf$inter_qs, dmf$Insurance)[2, 2], table(dmf$inter_qs, dmf$Insurance)[2, 3]), 
+                                    Variable= ifelse(Variable== "InsuranceGov", "Gov", "No Ins"), 
+                                    p= ifelse(p== "0.00", "<0.001", p))
+ 
+ d.fp.long<- d.fp %>% dplyr::select(Variable, long_or, long_lclm, long_uclm, long_p) %>% filter(Variable %in% c("InsuranceGov", "InsuranceNo Insurance"))
+ names(d.fp.long)<- gsub("long_", "", names(d.fp.long))
+ d.fp.long<- d.fp.long %>% mutate(Covariate= "Long", 
+                                  N= c(table(dmf$inter_qs, dmf$Insurance)[3, 2], table(dmf$inter_qs, dmf$Insurance)[3, 3]), 
+                                  Variable= ifelse(Variable== "InsuranceGov", "Gov", "No Ins"), 
+                                  p= ifelse(p== "0.00", "<0.001", p))
+ 
+ 
+ d.fp.inter<- d.fp %>% dplyr::select(Variable) %>% filter(Variable %in% c("InsuranceGov", "InsuranceNo Insurance")) %>% 
+                                                          mutate(or= sprintf("%.2f", 1), 
+                                                          lclm= sprintf("%.2f", 0.99), 
+                                                          uclm= sprintf("%.2f", 1.01),
+                                                          p= "Ref",
+                                                          Covariate= "Inter", 
+                                                          N= c(table(dmf$inter_qs, dmf$Insurance)[1, 2], table(dmf$inter_qs, dmf$Insurance)[1, 3]), 
+                                                          Variable= ifelse(Variable== "InsuranceGov", "Gov", "No Ins"), 
+                                                          p= ifelse(p== "0.00", "<0.001", p))
+ 
+ dfp<- rbind(d.fp.early, d.fp.long, d.fp.inter) %>% mutate(order= ifelse(Variable== "No Ins" & Covariate== "Early", 2, 
+                                                                         ifelse(Variable== "No Ins" & Covariate== "Long", 3,
+                                                                                ifelse(Variable== "No Ins" & Covariate== "Inter", 1,
+                                                                                       ifelse(Variable== "Gov" & Covariate== "Early", 5, 
+                                                                                              ifelse(Variable== "Gov" & Covariate== "Long", 6,
+                                                                                                     ifelse(Variable== "Gov" & Covariate== "Inter", 4, 0))))))) %>% arrange(order)
+ # dfp[nrow(dfp) + 1 , ] <-c("Insurance", NA, NA, NA, "P-value", "Time to Surgery", "N")
+ # dfp<-  dfp %>% mutate(order= ifelse(Variable== "No Ins" & Covariate== "Early", 2, 
+ #                                     ifelse(Variable== "No Ins" & Covariate== "Long", 3,
+ #                                            ifelse(Variable== "No Ins" & Covariate== "Intermediate", 1,
+ #                                                   ifelse(Variable== "Gov" & Covariate== "Early", 5, 
+ #                                                          ifelse(Variable== "Gov" & Covariate== "Long", 6,
+ #                                                                 ifelse(Variable== "Gov" & Covariate== "Intermediate", 4, 0))))))) %>% arrange(order)
+ # 
+
+ # Forest plot using Armen's code T0
+ mean<- as.character(dfp$or)
+ lower <- as.character(dfp$lclm)
+ upper <- as.character(dfp$uclm)
+ 
+ ors.cis.t0 <- 
+   structure(list(
+     mean  = mean, 
+     
+     lower = lower,
+     
+     upper = upper),
+     .Names = c("mean", "lower", "upper"), 
+     row.names = c(NA, -6L), 
+     class = "data.frame")
+ test_data <- data.frame(mean=c(1.00, 4.47, 0.79, 1.00, 0.77, 1.64),
+                         lower=c(0.99,  1.92, 0.31, 0.99, 0.33, 0.80),
+                         upper=c(1.01, 10.4, 2.05, 1.01, 1.81, 3.35) )
+ 
+ 
+ characteristics <- as.character(dfp$Variable)
+ covariate<- as.character(dfp$Covariate)
+ n<- as.character(dfp$N)
+ p.trend <- as.character(dfp$p)
+ 
+ tabletext.t0<-cbind(
+   characteristics, covariate, n, "",  "", "", p.trend)
+ 
+ 
+ 
+ xticks <- seq(from = 0.25, to = 11, by = .25)
+ xlabels <- rep(TRUE, length.out = length(xticks))
+ xlabels[length(xlabels)] <- TRUE
+ attr(xticks, "labels") <- xlabels 
+ 
+ library(forestplot)
+ FP.T0<- forestplot(tabletext.t0, graph.pos = 4, new_page = TRUE,
+                    test_data,
+                   
+                    boxsize=.4, xticks = xticks,
+                    zero=1, 
+                    cex=1.1,
+                    cex.xaxis=100,
+                    lwd.ci=1.5, 
+                    graphwidth=unit(5, "inches"),
+                    ci.vertices=TRUE, 
+                    ci.vertices.height = .30,
+                    lwd.xaxis = 1.5,
+                    
+                    colgap=unit(.5,"mm"),
+                    xlog=FALSE, 
+                    xlab="OR (95% CI)",  
+                    col=fpColors(box="black", lines="black", zero = "grey"), 
+                    txt_gp=fpTxtGp(label=gpar(cex=2),
+                                   ticks=gpar(cex=2),
+                                   xlab=gpar(cex = 2),
+                                   title=gpar(cex =2)),
+                    lineheight = unit(25,"mm"), 
+                    title= "OR (95% CI) Insurance Type and Time to Surgery P-Value")
+ 
+  
+  # Table one 
+  library(tableone)
+  tone<- dmf %>% dplyr::select(inter_qs, Insurance, Age, Location, Distance, BMI, comorbidities, Race, Gender, Ethnicity, Stage) %>% 
+    mutate(Distance= ifelse(Distance== 1, ">100 km", "<100 km"))
+   
+  tableone<- print(CreateTableOne(strata = "inter_qs", 
+                   data= tone, 
+                   vars = c("Insurance", "Age", "Race", "Gender", "Ethnicity", "Stage", 
+                            "Location", "Distance", "BMI", "comorbidities")), nonnormal = c("Age", "BMI"), minMax = TRUE) 
+  
+  write.csv(tableone, file="R:/Lab/AG_data/Colon/datasets/output/Table_one_for_poster.csv")
